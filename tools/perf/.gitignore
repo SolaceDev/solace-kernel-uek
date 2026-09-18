@@ -51,3 +51,5 @@ libsymbol/
 fixdep
 Documentation/doc.dep
 python_ext_build/
+pmu-events/empty-pmu-events.log
+pmu-events/test-empty-pmu-events.c

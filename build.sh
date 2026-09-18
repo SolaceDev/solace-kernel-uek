@@ -72,6 +72,20 @@ run_build() {
     ./build-env/run-dev-env-ol9-kernel make -C "$build_dir" ARCH=x86_64 "$@"
 }
 
+# Build the perf tool from the kernel tree (SOL-154026). The perf rpm is no
+# longer shipped on the appliance, so build perf alongside the kernel and
+# leave the binary at tools/perf/perf for developers to copy to an appliance.
+# perf is userspace, so it is built with the container's system gcc rather
+# than the kernel's gcc 7.3 (which the python extension's compile flags
+# reject). -w silences the warnings the perf tree produces with that gcc.
+build_perf() {
+    local build_dir=$1
+    echo "Building perf"
+    run_build "$build_dir/tools/perf" CC=/usr/bin/gcc clean
+    run_build "$build_dir/tools/perf" CC=/usr/bin/gcc -j"$(nproc)" \
+        EXTRA_CFLAGS="-w" WERROR=0
+}
+
 # Handle CI build (with BUILD_NUMBER set)
 ci_build() {
     echo "CI build detected, publishing to ${LOAD_DIR}"
@@ -93,6 +107,11 @@ ci_build() {
     cd "$build_dir"
     run_build "$build_dir" "$@"
     local rc=$?
+
+    if [[ $rc -eq 0 ]]; then
+        build_perf "$build_dir"
+        rc=$?
+    fi
 
     # Create source archive
     if [[ $rc -eq 0 ]]; then
@@ -116,6 +135,10 @@ if [[ -n "${BUILD_NUMBER:-}" ]]; then
 else
     run_build . "$@"
     rc=$?
+    if [[ $rc -eq 0 ]]; then
+        build_perf .
+        rc=$?
+    fi
 fi
 
 exit $rc
