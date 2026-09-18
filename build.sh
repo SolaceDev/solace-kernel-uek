@@ -1,6 +1,10 @@
 #!/bin/bash
 set -eu
 
+# Configuration
+COMPILER_PATH=${COMPILER_PATH:-"/opt/gcc-7.3.0-x86_64/bin"}
+PATH=${COMPILER_PATH}:$PATH
+
 VERSION=$(make ARCH=x86_64 kernelversion)
 [[ -z "$VERSION" ]] && { echo "Error: Couldn't determine kernel version"; exit 1; }
 
@@ -71,12 +75,15 @@ run_build() {
 # Build the perf tool from the kernel tree (SOL-154026). The perf rpm is no
 # longer shipped on the appliance, so build perf alongside the kernel and
 # leave the binary at tools/perf/perf for developers to copy to an appliance.
-# -w silences the warnings the perf tree produces with the container's gcc.
+# perf is userspace, so it is built with the container's system gcc rather
+# than the kernel's gcc 7.3 (which the python extension's compile flags
+# reject). -w silences the warnings the perf tree produces with that gcc.
 build_perf() {
     local build_dir=$1
     echo "Building perf"
-    run_build "$build_dir/tools/perf" clean
-    run_build "$build_dir/tools/perf" -j"$(nproc)" EXTRA_CFLAGS="-w" WERROR=0
+    run_build "$build_dir/tools/perf" CC=/usr/bin/gcc clean
+    run_build "$build_dir/tools/perf" CC=/usr/bin/gcc -j"$(nproc)" \
+        EXTRA_CFLAGS="-w" WERROR=0
 }
 
 # Handle CI build (with BUILD_NUMBER set)
