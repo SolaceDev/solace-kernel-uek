@@ -524,18 +524,18 @@ struct sock *inet_diag_find_one_icsk(struct net *net,
 
 	rcu_read_lock();
 	if (req->sdiag_family == AF_INET)
-		sk = inet_lookup(net, hashinfo, NULL, 0, req->id.idiag_dst[0],
+		sk = inet_lookup(net, NULL, 0, req->id.idiag_dst[0],
 				 req->id.idiag_dport, req->id.idiag_src[0],
 				 req->id.idiag_sport, req->id.idiag_if);
 #if IS_ENABLED(CONFIG_IPV6)
 	else if (req->sdiag_family == AF_INET6) {
 		if (ipv6_addr_v4mapped((struct in6_addr *)req->id.idiag_dst) &&
 		    ipv6_addr_v4mapped((struct in6_addr *)req->id.idiag_src))
-			sk = inet_lookup(net, hashinfo, NULL, 0, req->id.idiag_dst[3],
+			sk = inet_lookup(net, NULL, 0, req->id.idiag_dst[3],
 					 req->id.idiag_dport, req->id.idiag_src[3],
 					 req->id.idiag_sport, req->id.idiag_if);
 		else
-			sk = inet6_lookup(net, hashinfo, NULL, 0,
+			sk = inet6_lookup(net, NULL, 0,
 					  (struct in6_addr *)req->id.idiag_dst,
 					  req->id.idiag_dport,
 					  (struct in6_addr *)req->id.idiag_src,
@@ -1367,8 +1367,6 @@ static int inet_diag_type2proto(int type)
 	switch (type) {
 	case TCPDIAG_GETSOCK:
 		return IPPROTO_TCP;
-	case DCCPDIAG_GETSOCK:
-		return IPPROTO_DCCP;
 	default:
 		return 0;
 	}

@@ -49,8 +49,7 @@ struct bnxt_sw_tx_bd *bnxt_xmit_bd(struct bnxt *bp,
 		tx_buf->page = virt_to_head_page(xdp->data);
 
 	txbd = &txr->tx_desc_ring[TX_RING(bp, prod)][TX_IDX(prod)];
-	flags = (len << TX_BD_LEN_SHIFT) |
-		((num_frags + 1) << TX_BD_FLAGS_BD_CNT_SHIFT) |
+	flags = (len << TX_BD_LEN_SHIFT) | TX_BD_CNT(num_frags + 1) |
 		bnxt_lhint_arr[len >> 9];
 	txbd->tx_bd_len_flags_type = cpu_to_le32(flags);
 	txbd->tx_bd_opaque = SET_TX_OPAQUE(bp, txr, prod, 1 + num_frags);
@@ -468,9 +467,8 @@ bnxt_xdp_build_skb(struct bnxt *bp, struct sk_buff *skb, u8 num_frags,
 	if (!skb)
 		return NULL;
 
-	xdp_update_skb_shared_info(skb, num_frags,
-				   sinfo->xdp_frags_size,
-				   BNXT_RX_PAGE_SIZE * num_frags,
-				   xdp_buff_is_frag_pfmemalloc(xdp));
+	xdp_update_skb_frags_info(skb, num_frags, sinfo->xdp_frags_size,
+				  BNXT_RX_PAGE_SIZE * num_frags,
+				  xdp_buff_get_skb_flags(xdp));
 	return skb;
 }

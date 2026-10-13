@@ -1768,7 +1768,7 @@ static bool bnx2x_trylock_hw_lock(struct bnx2x *bp, u32 resource)
  * @bp:	driver handle
  *
  * Returns the recovery leader resource id according to the engine this function
- * belongs to. Currently only only 2 engines is supported.
+ * belongs to. Currently only 2 engines is supported.
  */
 static int bnx2x_get_leader_lock_resource(struct bnx2x *bp)
 {
@@ -13474,10 +13474,13 @@ static int bnx2x_init_firmware(struct bnx2x *bp)
 
 iro_alloc_err:
 	kfree(bp->init_ops_offsets);
+	bp->init_ops_offsets = NULL;
 init_offsets_alloc_err:
 	kfree(bp->init_ops);
+	bp->init_ops = NULL;
 init_ops_alloc_err:
 	kfree(bp->init_data);
+	bp->init_data = NULL;
 request_firmware_exit:
 	release_firmware(bp->firmware);
 	bp->firmware = NULL;

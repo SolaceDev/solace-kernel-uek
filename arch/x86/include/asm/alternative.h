@@ -48,7 +48,7 @@
 		".popsection\n"				\
 		"671:"
 
-#define LOCK_PREFIX LOCK_PREFIX_HERE "\n\tlock; "
+#define LOCK_PREFIX LOCK_PREFIX_HERE "\n\tlock "
 
 #else /* ! CONFIG_SMP */
 #define LOCK_PREFIX_HERE ""
@@ -89,6 +89,20 @@ struct alt_instr {
 	u8  instrlen;		/* length of original instruction */
 	u8  replacementlen;	/* length of new instruction */
 } __packed;
+
+/* The serialized layout is part of the UEK module kABI. */
+static_assert(sizeof(struct alt_instr) == 14,
+	      "UEK module .altinstructions entries must remain 14 bytes");
+static_assert(offsetof(struct alt_instr, instr_offset) == 0,
+	      "struct alt_instr.instr_offset offset changed");
+static_assert(offsetof(struct alt_instr, repl_offset) == 4,
+	      "struct alt_instr.repl_offset offset changed");
+static_assert(offsetof(struct alt_instr, ft_flags) == 8,
+	      "struct alt_instr.ft_flags offset changed");
+static_assert(offsetof(struct alt_instr, instrlen) == 12,
+	      "struct alt_instr.instrlen offset changed");
+static_assert(offsetof(struct alt_instr, replacementlen) == 13,
+	      "struct alt_instr.replacementlen offset changed");
 
 extern struct alt_instr __alt_instructions[], __alt_instructions_end[];
 

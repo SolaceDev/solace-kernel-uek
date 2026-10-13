@@ -467,7 +467,9 @@ EXPORT_PER_CPU_SYMBOL(softnet_data);
  * PP consumers must pay attention to run APIs in the appropriate context
  * (e.g. NAPI context).
  */
-DEFINE_PER_CPU(struct page_pool *, system_page_pool);
+DEFINE_PER_CPU(struct page_pool_bh, system_page_pool) = {
+	.bh_lock = INIT_LOCAL_LOCK(bh_lock),
+};
 
 #ifdef CONFIG_LOCKDEP
 /*
@@ -3779,8 +3781,14 @@ static netdev_features_t gso_features_check(const struct sk_buff *skb,
 	if (!(skb_shinfo(skb)->gso_type & SKB_GSO_PARTIAL))
 		features &= ~dev->gso_partial_features;
 
-	/* Make sure to clear the IPv4 ID mangling feature if the
-	 * IPv4 header has the potential to be fragmented.
+	/* Make sure to clear the IPv4 ID mangling feature if the IPv4 header
+	 * has the potential to be fragmented so that TSO does not generate
+	 * segments with the same ID. For encapsulated packets, the ID mangling
+	 * feature is guaranteed not to use the same ID for the outer IPv4
+	 * headers of the generated segments if the headers have the potential
+	 * to be fragmented, so there is no need to clear the IPv4 ID mangling
+	 * feature (see the section about NETIF_F_TSO_MANGLEID in
+	 * segmentation-offloads.rst).
 	 */
 	if (skb_shinfo(skb)->gso_type & SKB_GSO_TCPV4) {
 		const struct iphdr *iph;
@@ -5353,7 +5361,10 @@ netif_skb_check_for_xdp(struct sk_buff **pskb, struct bpf_prog *prog)
 	struct sk_buff *skb = *pskb;
 	int err, hroom, troom;
 
-	if (!skb_cow_data_for_xdp(this_cpu_read(system_page_pool), pskb, prog))
+	local_lock_nested_bh(&system_page_pool.bh_lock);
+	err = skb_cow_data_for_xdp(this_cpu_read(system_page_pool.pool), pskb, prog);
+	local_unlock_nested_bh(&system_page_pool.bh_lock);
+	if (!err)
 		return 0;
 
 	/* In case we have to go down the path and also linearize,
@@ -9619,7 +9630,7 @@ int netif_change_tx_queue_len(struct net_device *dev, unsigned long new_len)
 	unsigned int orig_len = dev->tx_queue_len;
 	int res;
 
-	if (new_len != (unsigned int)new_len)
+	if (new_len > S16_MAX)
 		return -ERANGE;
 
 	if (new_len != orig_len) {
@@ -11793,6 +11804,7 @@ free_pcpu:
 	free_percpu(dev->pcpu_refcnt);
 free_dev:
 #endif
+	ref_tracker_dir_exit(&dev->refcnt_tracker);
 	kvfree(dev);
 	return NULL;
 }
@@ -12795,7 +12807,7 @@ static int net_page_pool_create(int cpuid)
 		return err;
 	}
 
-	per_cpu(system_page_pool, cpuid) = pp_ptr;
+	per_cpu(system_page_pool.pool, cpuid) = pp_ptr;
 #endif
 	return 0;
 }
@@ -12924,13 +12936,13 @@ out:
 		for_each_possible_cpu(i) {
 			struct page_pool *pp_ptr;
 
-			pp_ptr = per_cpu(system_page_pool, i);
+			pp_ptr = per_cpu(system_page_pool.pool, i);
 			if (!pp_ptr)
 				continue;
 
 			xdp_unreg_page_pool(pp_ptr);
 			page_pool_destroy(pp_ptr);
-			per_cpu(system_page_pool, i) = NULL;
+			per_cpu(system_page_pool.pool, i) = NULL;
 		}
 	}
 

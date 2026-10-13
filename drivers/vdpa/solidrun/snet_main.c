@@ -418,11 +418,15 @@ static int snet_request_irqs(struct pci_dev *pdev, struct snet *snet)
 				       snet->vqs[i]->irq_name, snet->vqs[i]);
 		if (ret) {
 			SNET_ERR(pdev, "Failed to request IRQ\n");
-			return ret;
+			goto err_free_irqs;
 		}
 		snet->vqs[i]->irq = irq;
 	}
 	return 0;
+
+err_free_irqs:
+	snet_free_irqs(snet);
+	return ret;
 }
 
 static void snet_set_status(struct vdpa_device *vdev, u8 status)
@@ -1009,8 +1013,8 @@ static int snet_vdpa_probe_vf(struct pci_dev *pdev)
 	}
 
 	/* Allocate vdpa device */
-	snet = vdpa_alloc_device(struct snet, vdpa, &pdev->dev, &snet_config_ops, 1, 1, NULL,
-				 false);
+	snet = vdpa_alloc_device(struct snet, vdpa, &pdev->dev, &snet_config_ops,
+				 NULL, 1, 1, NULL, false);
 	if (!snet) {
 		SNET_ERR(pdev, "Failed to allocate a vdpa device\n");
 		ret = -ENOMEM;
@@ -1053,8 +1057,8 @@ static int snet_vdpa_probe_vf(struct pci_dev *pdev)
 	 */
 	snet_reserve_irq_idx(pf_irqs ? pdev_pf : pdev, snet);
 
-	/*set DMA device*/
-	snet->vdpa.dma_dev = &pdev->dev;
+	/* set map metadata */
+	snet->vdpa.vmap.dma_dev = &pdev->dev;
 
 	/* Register VDPA device */
 	ret = vdpa_register_device(&snet->vdpa, snet->cfg->vq_num);

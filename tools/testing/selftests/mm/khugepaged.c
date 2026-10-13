@@ -23,6 +23,7 @@
 
 #include "vm_util.h"
 #include "thp_settings.h"
+#include "../kselftest.h"
 
 #define BASE_ADDR ((void *)(1UL << 30))
 static unsigned long hpage_pmd_size;
@@ -1189,6 +1190,11 @@ int main(int argc, char **argv)
 		 */
 		.read_ahead_kb = 0,
 	};
+
+	if (!thp_is_enabled()) {
+		printf("Transparent Hugepages not available\n");
+		return KSFT_SKIP;
+	}
 
 	parse_test_type(argc, argv);
 

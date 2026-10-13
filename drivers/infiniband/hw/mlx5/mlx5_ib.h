@@ -638,8 +638,13 @@ enum mlx5_mkey_type {
 	MLX5_MKEY_IMPLICIT_CHILD,
 };
 
+/* Used for non-existent ph value */
+#define MLX5_IB_NO_PH 0xff
+
 struct mlx5r_cache_rb_key {
 	u8 ats:1;
+	u8 ph;
+	u16 st_index;
 	unsigned int access_mode;
 	unsigned int access_flags;
 	unsigned int ndescs;
@@ -849,6 +854,8 @@ struct mlx5_ib_port_resources {
 struct mlx5_data_direct_resources {
 	u32 pdn;
 	u32 mkey;
+	u32 mkey_ro;
+	u8 mkey_ro_valid :1;
 };
 
 struct mlx5_ib_resources {
@@ -1377,10 +1384,12 @@ int mlx5_ib_resize_cq(struct ib_cq *ibcq, int entries, struct ib_udata *udata);
 struct ib_mr *mlx5_ib_get_dma_mr(struct ib_pd *pd, int acc);
 struct ib_mr *mlx5_ib_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
 				  u64 virt_addr, int access_flags,
+				  struct ib_dmah *dmah,
 				  struct ib_udata *udata);
 struct ib_mr *mlx5_ib_reg_user_mr_dmabuf(struct ib_pd *pd, u64 start,
 					 u64 length, u64 virt_addr,
 					 int fd, int access_flags,
+					 struct ib_dmah *dmah,
 					 struct uverbs_attr_bundle *attrs);
 int mlx5_ib_advise_mr(struct ib_pd *pd,
 		      enum ib_uverbs_advise_mr_advice advice,
@@ -1813,6 +1822,10 @@ mlx5_umem_mkc_find_best_pgsz(struct mlx5_ib_dev *dev, struct ib_umem *umem,
 	min_log_entity_size_cap = get_min_log_entity_size_cap(dev, access_mode);
 
 	bitmap = GENMASK_ULL(max_log_entity_size_cap, min_log_entity_size_cap);
+
+	/* In KSM mode HW requires IOVA and mkey's page size to be aligned */
+	if (access_mode == MLX5_MKC_ACCESS_MODE_KSM && iova)
+		bitmap &= GENMASK_ULL(__ffs64(iova), 0);
 
 	return ib_umem_find_best_pgsz(umem, bitmap, iova);
 }

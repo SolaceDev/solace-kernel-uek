@@ -78,6 +78,7 @@ config NET_SHAPER
 menu "Networking options"
 
 source "net/packet/Kconfig"
+source "net/psp/Kconfig"
 source "net/unix/Kconfig"
 source "net/tls/Kconfig"
 source "net/xfrm/Kconfig"
@@ -245,7 +246,6 @@ source "net/bridge/netfilter/Kconfig"
 
 endif
 
-source "net/dccp/Kconfig"
 source "net/sctp/Kconfig"
 source "net/rds/Kconfig"
 source "net/tipc/Kconfig"

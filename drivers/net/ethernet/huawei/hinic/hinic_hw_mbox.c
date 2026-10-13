@@ -128,6 +128,7 @@ enum hinic_mbox_tx_status {
 
 #define SEQ_ID_START_VAL			0
 #define SEQ_ID_MAX_VAL				42
+#define MBOX_LAST_SEG_MAX_LEN			(MBOX_MAX_BUF_SZ - SEQ_ID_MAX_VAL * MBOX_SEG_LEN)
 
 #define NO_DMA_ATTRIBUTE_VAL			0
 
@@ -372,7 +373,8 @@ recv_pf_from_vf_mbox_handler(struct hinic_mbox_func_to_func *func_to_func,
 static bool check_mbox_seq_id_and_seg_len(struct hinic_recv_mbox *recv_mbox,
 					  u8 seq_id, u8 seg_len)
 {
-	if (seq_id > SEQ_ID_MAX_VAL || seg_len > MBOX_SEG_LEN)
+	if (seq_id > SEQ_ID_MAX_VAL || seg_len > MBOX_SEG_LEN ||
+	    (seq_id == SEQ_ID_MAX_VAL && seg_len > MBOX_LAST_SEG_MAX_LEN))
 		return false;
 
 	if (seq_id == 0) {
@@ -861,7 +863,7 @@ static int send_mbox_to_func(struct hinic_mbox_func_to_func *func_to_func,
 		 HINIC_MBOX_HEADER_SET(NOT_LAST_SEG, LAST) |
 		 HINIC_MBOX_HEADER_SET(direction, DIRECTION) |
 		 HINIC_MBOX_HEADER_SET(cmd, CMD) |
-		 /* The vf's offset to it's associated pf */
+		 /* The vf's offset to its associated pf */
 		 HINIC_MBOX_HEADER_SET(msg_info->msg_id, MSG_ID) |
 		 HINIC_MBOX_HEADER_SET(msg_info->status, STATUS) |
 		 HINIC_MBOX_HEADER_SET(hinic_global_func_id_hw(hwdev->hwif),

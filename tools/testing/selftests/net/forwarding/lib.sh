@@ -291,16 +291,6 @@ if [[ "$CHECK_TC" = "yes" ]]; then
 	check_tc_version
 fi
 
-require_command()
-{
-	local cmd=$1; shift
-
-	if [[ ! -x "$(command -v "$cmd")" ]]; then
-		echo "SKIP: $cmd not installed"
-		exit $ksft_skip
-	fi
-}
-
 # IPv6 support was added in v3.0
 check_mtools_version()
 {
@@ -449,79 +439,6 @@ done
 ##############################################################################
 # Helpers
 
-# Whether FAILs should be interpreted as XFAILs. Internal.
-FAIL_TO_XFAIL=
-
-check_err()
-{
-	local err=$1
-	local msg=$2
-
-	if ((err)); then
-		if [[ $FAIL_TO_XFAIL = yes ]]; then
-			ret_set_ksft_status $ksft_xfail "$msg"
-		else
-			ret_set_ksft_status $ksft_fail "$msg"
-		fi
-	fi
-}
-
-check_fail()
-{
-	local err=$1
-	local msg=$2
-
-	check_err $((!err)) "$msg"
-}
-
-check_err_fail()
-{
-	local should_fail=$1; shift
-	local err=$1; shift
-	local what=$1; shift
-
-	if ((should_fail)); then
-		check_fail $err "$what succeeded, but should have failed"
-	else
-		check_err $err "$what failed"
-	fi
-}
-
-xfail()
-{
-	FAIL_TO_XFAIL=yes "$@"
-}
-
-xfail_on_slow()
-{
-	if [[ $KSFT_MACHINE_SLOW = yes ]]; then
-		FAIL_TO_XFAIL=yes "$@"
-	else
-		"$@"
-	fi
-}
-
-omit_on_slow()
-{
-	if [[ $KSFT_MACHINE_SLOW != yes ]]; then
-		"$@"
-	fi
-}
-
-xfail_on_veth()
-{
-	local dev=$1; shift
-	local kind
-
-	kind=$(ip -j -d link show dev $dev |
-			jq -r '.[].linkinfo.info_kind')
-	if [[ $kind = veth ]]; then
-		FAIL_TO_XFAIL=yes "$@"
-	else
-		"$@"
-	fi
-}
-
 not()
 {
 	"$@"
@@ -639,30 +556,6 @@ wait_for_dev()
         fi
 }
 
-cmd_jq()
-{
-	local cmd=$1
-	local jq_exp=$2
-	local jq_opts=$3
-	local ret
-	local output
-
-	output="$($cmd)"
-	# it the command fails, return error right away
-	ret=$?
-	if [[ $ret -ne 0 ]]; then
-		return $ret
-	fi
-	output=$(echo $output | jq -r $jq_opts "$jq_exp")
-	ret=$?
-	if [[ $ret -ne 0 ]]; then
-		return $ret
-	fi
-	echo $output
-	# return success only in case of non-empty output
-	[ ! -z "$output" ]
-}
-
 pre_cleanup()
 {
 	if [ "${PAUSE_ON_CLEANUP}" = "yes" ]; then
@@ -689,6 +582,12 @@ vrf_cleanup()
 	ip -6 rule del pref 32765
 	ip -4 rule add pref 0 table local
 	ip -4 rule del pref 32765
+}
+
+adf_vrf_prepare()
+{
+	vrf_prepare
+	defer vrf_cleanup
 }
 
 __last_tb_id=0
@@ -801,6 +700,12 @@ simple_if_fini()
 
 	__simple_if_fini $if_name "${array[@]}"
 	vrf_destroy $vrf_name
+}
+
+adf_simple_if_init()
+{
+	simple_if_init "$@"
+	defer simple_if_fini "$@"
 }
 
 tunnel_create()
@@ -1012,13 +917,6 @@ packets_rate()
 	local interval=$1; shift
 
 	echo $(((t1 - t0) / interval))
-}
-
-mac_get()
-{
-	local if_name=$1
-
-	ip -j link show dev $if_name | jq -r '.[]["address"]'
 }
 
 ether_addr_to_u64()
@@ -1294,14 +1192,10 @@ matchall_sink_create()
 	   action drop
 }
 
-tests_run()
+cleanup()
 {
-	local current_test
-
-	for current_test in ${TESTS:-$ALL_TESTS}; do
-		in_defer_scope \
-			$current_test
-	done
+	pre_cleanup
+	defer_scopes_cleanup
 }
 
 multipath_eval()
@@ -1658,8 +1552,9 @@ start_tcp_traffic()
 
 stop_traffic()
 {
-	# Suppress noise from killing mausezahn.
-	{ kill %% && wait %%; } 2>/dev/null
+	local pid=${1-%%}; shift
+
+	kill_process "$pid"
 }
 
 declare -A cappid

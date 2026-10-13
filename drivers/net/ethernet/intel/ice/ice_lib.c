@@ -2803,6 +2803,9 @@ int ice_vsi_release(struct ice_vsi *vsi)
 		return -ENODEV;
 	pf = vsi->back;
 
+	if (ice_is_vsi_dflt_vsi(vsi))
+		ice_clear_dflt_vsi(vsi);
+
 	if (test_bit(ICE_FLAG_RSS_ENA, pf->flags))
 		ice_rss_clean(vsi);
 
@@ -3141,7 +3144,7 @@ void ice_vsi_cfg_netdev_tc(struct ice_vsi *vsi, u8 ena_tc)
 	if (!netdev)
 		return;
 
-	/* CHNL VSI doesn't have it's own netdev, hence, no netdev_tc */
+	/* CHNL VSI doesn't have its own netdev, hence, no netdev_tc */
 	if (vsi->type == ICE_VSI_CHNL)
 		return;
 

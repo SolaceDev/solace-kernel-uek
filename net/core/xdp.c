@@ -430,27 +430,25 @@ EXPORT_SYMBOL_GPL(xdp_rxq_info_attach_page_pool);
  * is used for those calls sites.  Thus, allowing for faster recycling
  * of xdp_frames/pages in those cases.
  */
-void __xdp_return(void *data, struct xdp_mem_info *mem, bool napi_direct,
-		  struct xdp_buff *xdp)
+void __xdp_return(netmem_ref netmem, enum xdp_mem_type mem_type,
+		  bool napi_direct, struct xdp_buff *xdp)
 {
-	struct page *page;
-
-	switch (mem->type) {
+	switch (mem_type) {
 	case MEM_TYPE_PAGE_POOL:
-		page = virt_to_head_page(data);
+		netmem = netmem_compound_head(netmem);
 		if (napi_direct && xdp_return_frame_no_direct())
 			napi_direct = false;
 		/* No need to check netmem_is_pp() as mem->type knows this a
 		 * page_pool page
 		 */
-		page_pool_put_full_page(page->pp, page, napi_direct);
+		page_pool_put_full_netmem(netmem_get_pp(netmem), netmem,
+					  napi_direct);
 		break;
 	case MEM_TYPE_PAGE_SHARED:
-		page_frag_free(data);
+		page_frag_free(__netmem_address(netmem));
 		break;
 	case MEM_TYPE_PAGE_ORDER0:
-		page = virt_to_page(data); /* Assumes order0 page*/
-		put_page(page);
+		put_page(__netmem_to_page(netmem));
 		break;
 	case MEM_TYPE_XSK_BUFF_POOL:
 		/* NB! Only valid from an xdp_buff! */
@@ -458,7 +456,7 @@ void __xdp_return(void *data, struct xdp_mem_info *mem, bool napi_direct,
 		break;
 	default:
 		/* Not possible, checked in xdp_rxq_info_reg_mem_model() */
-		WARN(1, "Incorrect XDP memory type (%d) usage", mem->type);
+		WARN(1, "Incorrect XDP memory type (%d) usage", mem_type);
 		break;
 	}
 }
@@ -466,38 +464,34 @@ void __xdp_return(void *data, struct xdp_mem_info *mem, bool napi_direct,
 void xdp_return_frame(struct xdp_frame *xdpf)
 {
 	struct skb_shared_info *sinfo;
-	int i;
 
 	if (likely(!xdp_frame_has_frags(xdpf)))
 		goto out;
 
 	sinfo = xdp_get_shared_info_from_frame(xdpf);
-	for (i = 0; i < sinfo->nr_frags; i++) {
-		struct page *page = skb_frag_page(&sinfo->frags[i]);
+	for (u32 i = 0; i < sinfo->nr_frags; i++)
+		__xdp_return(skb_frag_netmem(&sinfo->frags[i]), xdpf->mem_type,
+			     false, NULL);
 
-		__xdp_return(page_address(page), &xdpf->mem, false, NULL);
-	}
 out:
-	__xdp_return(xdpf->data, &xdpf->mem, false, NULL);
+	__xdp_return(virt_to_netmem(xdpf->data), xdpf->mem_type, false, NULL);
 }
 EXPORT_SYMBOL_GPL(xdp_return_frame);
 
 void xdp_return_frame_rx_napi(struct xdp_frame *xdpf)
 {
 	struct skb_shared_info *sinfo;
-	int i;
 
 	if (likely(!xdp_frame_has_frags(xdpf)))
 		goto out;
 
 	sinfo = xdp_get_shared_info_from_frame(xdpf);
-	for (i = 0; i < sinfo->nr_frags; i++) {
-		struct page *page = skb_frag_page(&sinfo->frags[i]);
+	for (u32 i = 0; i < sinfo->nr_frags; i++)
+		__xdp_return(skb_frag_netmem(&sinfo->frags[i]), xdpf->mem_type,
+			     true, NULL);
 
-		__xdp_return(page_address(page), &xdpf->mem, true, NULL);
-	}
 out:
-	__xdp_return(xdpf->data, &xdpf->mem, true, NULL);
+	__xdp_return(virt_to_netmem(xdpf->data), xdpf->mem_type, true, NULL);
 }
 EXPORT_SYMBOL_GPL(xdp_return_frame_rx_napi);
 
@@ -516,7 +510,7 @@ EXPORT_SYMBOL_GPL(xdp_return_frame_rx_napi);
 void xdp_return_frame_bulk(struct xdp_frame *xdpf,
 			   struct xdp_frame_bulk *bq)
 {
-	if (xdpf->mem.type != MEM_TYPE_PAGE_POOL) {
+	if (xdpf->mem_type != MEM_TYPE_PAGE_POOL) {
 		xdp_return_frame(xdpf);
 		return;
 	}
@@ -541,22 +535,31 @@ void xdp_return_frame_bulk(struct xdp_frame *xdpf,
 }
 EXPORT_SYMBOL_GPL(xdp_return_frame_bulk);
 
+/**
+ * xdp_return_frag -- free one XDP frag or decrement its refcount
+ * @netmem: network memory reference to release
+ * @xdp: &xdp_buff to release the frag for
+ */
+void xdp_return_frag(netmem_ref netmem, const struct xdp_buff *xdp)
+{
+	__xdp_return(netmem, xdp->rxq->mem.type, true, NULL);
+}
+EXPORT_SYMBOL_GPL(xdp_return_frag);
+
 void xdp_return_buff(struct xdp_buff *xdp)
 {
 	struct skb_shared_info *sinfo;
-	int i;
 
 	if (likely(!xdp_buff_has_frags(xdp)))
 		goto out;
 
 	sinfo = xdp_get_shared_info_from_buff(xdp);
-	for (i = 0; i < sinfo->nr_frags; i++) {
-		struct page *page = skb_frag_page(&sinfo->frags[i]);
+	for (u32 i = 0; i < sinfo->nr_frags; i++)
+		__xdp_return(skb_frag_netmem(&sinfo->frags[i]),
+			     xdp->rxq->mem.type, true, xdp);
 
-		__xdp_return(page_address(page), &xdp->rxq->mem, true, xdp);
-	}
 out:
-	__xdp_return(xdp->data, &xdp->rxq->mem, true, xdp);
+	__xdp_return(virt_to_netmem(xdp->data), xdp->rxq->mem.type, true, xdp);
 }
 EXPORT_SYMBOL_GPL(xdp_return_buff);
 
@@ -582,7 +585,7 @@ struct xdp_frame *xdp_convert_zc_to_xdp_frame(struct xdp_buff *xdp)
 		   xdp->data - xdp->data_meta;
 	totsize = xdp->data_end - xdp->data + metasize;
 
-	if (sizeof(*xdpf) + totsize > PAGE_SIZE)
+	if (sizeof(*xdpf) + totsize > SKB_WITH_OVERHEAD(PAGE_SIZE))
 		return NULL;
 
 	page = dev_alloc_page();
@@ -599,10 +602,10 @@ struct xdp_frame *xdp_convert_zc_to_xdp_frame(struct xdp_buff *xdp)
 
 	xdpf->data = addr + metasize;
 	xdpf->len = totsize - metasize;
-	xdpf->headroom = 0;
+	xdpf->headroom = metasize;
 	xdpf->metasize = metasize;
 	xdpf->frame_sz = PAGE_SIZE;
-	xdpf->mem.type = MEM_TYPE_PAGE_ORDER0;
+	xdpf->mem_type = MEM_TYPE_PAGE_ORDER0;
 
 	xsk_buff_free(xdp);
 	return xdpf;
@@ -616,15 +619,178 @@ void xdp_warn(const char *msg, const char *func, const int line)
 };
 EXPORT_SYMBOL_GPL(xdp_warn);
 
-int xdp_alloc_skb_bulk(void **skbs, int n_skb, gfp_t gfp)
+/**
+ * xdp_build_skb_from_buff - create an skb from &xdp_buff
+ * @xdp: &xdp_buff to convert to an skb
+ *
+ * Perform common operations to create a new skb to pass up the stack from
+ * &xdp_buff: allocate an skb head from the NAPI percpu cache, initialize
+ * skb data pointers and offsets, set the recycle bit if the buff is
+ * PP-backed, Rx queue index, protocol and update frags info.
+ *
+ * Return: new &sk_buff on success, %NULL on error.
+ */
+struct sk_buff *xdp_build_skb_from_buff(const struct xdp_buff *xdp)
 {
-	n_skb = kmem_cache_alloc_bulk(net_hotdata.skbuff_cache, gfp, n_skb, skbs);
-	if (unlikely(!n_skb))
-		return -ENOMEM;
+	const struct xdp_rxq_info *rxq = xdp->rxq;
+	const struct skb_shared_info *sinfo;
+	struct sk_buff *skb;
+	u32 nr_frags = 0;
+	int metalen;
 
-	return 0;
+	if (unlikely(xdp_buff_has_frags(xdp))) {
+		sinfo = xdp_get_shared_info_from_buff(xdp);
+		nr_frags = sinfo->nr_frags;
+	}
+
+	skb = napi_build_skb(xdp->data_hard_start, xdp->frame_sz);
+	if (unlikely(!skb))
+		return NULL;
+
+	skb_reserve(skb, xdp->data - xdp->data_hard_start);
+	__skb_put(skb, xdp->data_end - xdp->data);
+
+	metalen = xdp->data - xdp->data_meta;
+	if (metalen > 0)
+		skb_metadata_set(skb, metalen);
+
+	if (rxq->mem.type == MEM_TYPE_PAGE_POOL)
+		skb_mark_for_recycle(skb);
+
+	skb_record_rx_queue(skb, rxq->queue_index);
+
+	if (unlikely(nr_frags)) {
+		u32 tsize;
+
+		tsize = sinfo->xdp_frags_truesize ? : nr_frags * xdp->frame_sz;
+		xdp_update_skb_frags_info(skb, nr_frags, sinfo->xdp_frags_size,
+					  tsize, xdp_buff_get_skb_flags(xdp));
+	}
+
+	skb->protocol = eth_type_trans(skb, rxq->dev);
+
+	return skb;
 }
-EXPORT_SYMBOL_GPL(xdp_alloc_skb_bulk);
+EXPORT_SYMBOL_GPL(xdp_build_skb_from_buff);
+
+/**
+ * xdp_copy_frags_from_zc - copy frags from XSk buff to skb
+ * @skb: skb to copy frags to
+ * @xdp: XSk &xdp_buff from which the frags will be copied
+ * @pp: &page_pool backing page allocation, if available
+ *
+ * Copy all frags from XSk &xdp_buff to the skb to pass it up the stack.
+ * Allocate a new buffer for each frag, copy it and attach to the skb.
+ *
+ * Return: true on success, false on netmem allocation fail.
+ */
+static noinline bool xdp_copy_frags_from_zc(struct sk_buff *skb,
+					    const struct xdp_buff *xdp,
+					    struct page_pool *pp)
+{
+	struct skb_shared_info *sinfo = skb_shinfo(skb);
+	const struct skb_shared_info *xinfo;
+	u32 nr_frags, tsize = 0;
+	u32 flags = 0;
+
+	xinfo = xdp_get_shared_info_from_buff(xdp);
+	nr_frags = xinfo->nr_frags;
+
+	for (u32 i = 0; i < nr_frags; i++) {
+		const skb_frag_t *frag = &xinfo->frags[i];
+		u32 len = skb_frag_size(frag);
+		u32 offset, truesize = len;
+		struct page *page;
+
+		page = page_pool_dev_alloc(pp, &offset, &truesize);
+		if (unlikely(!page)) {
+			sinfo->nr_frags = i;
+			return false;
+		}
+
+		memcpy(page_address(page) + offset,
+		       skb_frag_page(frag) + skb_frag_off(frag),
+		       LARGEST_ALIGN(len));
+		__skb_fill_page_desc_noacc(sinfo, i, page, offset, len);
+
+		tsize += truesize;
+		if (page_is_pfmemalloc(page))
+			flags |= XDP_FLAGS_FRAGS_PF_MEMALLOC;
+	}
+
+	xdp_update_skb_frags_info(skb, nr_frags, xinfo->xdp_frags_size, tsize,
+				  flags);
+
+	return true;
+}
+
+/**
+ * xdp_build_skb_from_zc - create an skb from XSk &xdp_buff
+ * @xdp: source XSk buff
+ *
+ * Similar to xdp_build_skb_from_buff(), but for XSk frames. Allocate an skb
+ * head, new buffer for the head, copy the data and initialize the skb fields.
+ * If there are frags, allocate new buffers for them and copy.
+ * Buffers are allocated from the system percpu pools to try recycling them.
+ * If new skb was built successfully, @xdp is returned to XSk pool's freelist.
+ * On error, it remains untouched and the caller must take care of this.
+ *
+ * Return: new &sk_buff on success, %NULL on error.
+ */
+struct sk_buff *xdp_build_skb_from_zc(struct xdp_buff *xdp)
+{
+	const struct xdp_rxq_info *rxq = xdp->rxq;
+	u32 len = xdp->data_end - xdp->data_meta;
+	u32 truesize = xdp->frame_sz;
+	struct sk_buff *skb = NULL;
+	struct page_pool *pp;
+	int metalen;
+	void *data;
+
+	if (!IS_ENABLED(CONFIG_PAGE_POOL))
+		return NULL;
+
+	local_lock_nested_bh(&system_page_pool.bh_lock);
+	pp = this_cpu_read(system_page_pool.pool);
+	data = page_pool_dev_alloc_va(pp, &truesize);
+	if (unlikely(!data))
+		goto out;
+
+	skb = napi_build_skb(data, truesize);
+	if (unlikely(!skb)) {
+		page_pool_free_va(pp, data, true);
+		goto out;
+	}
+
+	skb_mark_for_recycle(skb);
+	skb_reserve(skb, xdp->data_meta - xdp->data_hard_start);
+
+	memcpy(__skb_put(skb, len), xdp->data_meta, LARGEST_ALIGN(len));
+
+	metalen = xdp->data - xdp->data_meta;
+	if (metalen > 0) {
+		skb_metadata_set(skb, metalen);
+		__skb_pull(skb, metalen);
+	}
+
+	skb_record_rx_queue(skb, rxq->queue_index);
+
+	if (unlikely(xdp_buff_has_frags(xdp)) &&
+	    unlikely(!xdp_copy_frags_from_zc(skb, xdp, pp))) {
+		napi_consume_skb(skb, true);
+		skb = NULL;
+		goto out;
+	}
+
+	xsk_buff_free(xdp);
+
+	skb->protocol = eth_type_trans(skb, rxq->dev);
+
+out:
+	local_unlock_nested_bh(&system_page_pool.bh_lock);
+	return skb;
+}
+EXPORT_SYMBOL_GPL(xdp_build_skb_from_zc);
 
 struct sk_buff *__xdp_build_skb_from_frame(struct xdp_frame *xdpf,
 					   struct sk_buff *skb,
@@ -658,10 +824,9 @@ struct sk_buff *__xdp_build_skb_from_frame(struct xdp_frame *xdpf,
 		skb_metadata_set(skb, xdpf->metasize);
 
 	if (unlikely(xdp_frame_has_frags(xdpf)))
-		xdp_update_skb_shared_info(skb, nr_frags,
-					   sinfo->xdp_frags_size,
-					   nr_frags * xdpf->frame_sz,
-					   xdp_frame_is_frag_pfmemalloc(xdpf));
+		xdp_update_skb_frags_info(skb, nr_frags, sinfo->xdp_frags_size,
+					  nr_frags * xdpf->frame_sz,
+					  xdp_frame_get_skb_flags(xdpf));
 
 	/* Essential SKB info: protocol and skb->dev */
 	skb->protocol = eth_type_trans(skb, dev);
@@ -672,7 +837,7 @@ struct sk_buff *__xdp_build_skb_from_frame(struct xdp_frame *xdpf,
 	 * - RX ring dev queue index	(skb_record_rx_queue)
 	 */
 
-	if (xdpf->mem.type == MEM_TYPE_PAGE_POOL)
+	if (xdpf->mem_type == MEM_TYPE_PAGE_POOL)
 		skb_mark_for_recycle(skb);
 
 	/* Allow SKB to reuse area used by xdp_frame */
@@ -719,8 +884,7 @@ struct xdp_frame *xdpf_clone(struct xdp_frame *xdpf)
 	nxdpf = addr;
 	nxdpf->data = addr + headroom;
 	nxdpf->frame_sz = PAGE_SIZE;
-	nxdpf->mem.type = MEM_TYPE_PAGE_ORDER0;
-	nxdpf->mem.id = 0;
+	nxdpf->mem_type = MEM_TYPE_PAGE_ORDER0;
 
 	return nxdpf;
 }

@@ -22,8 +22,6 @@
 #include <rdma/ib_addr.h>
 #include <rdma/ib_cache.h>
 #include <linux/mlx5/port.h>
-#include <linux/mlx5/eq.h>
-#include <linux/mlx5/driver.h>
 #include <linux/mlx5/vport.h>
 #include <linux/mlx5/fs.h>
 #include <linux/mlx5/eswitch.h>
@@ -1898,12 +1896,23 @@ int mlx5_ib_enable_lb(struct mlx5_ib_dev *dev, bool td, bool qp)
 	    dev->lb.qps == 1) {
 		if (!dev->lb.enabled) {
 			err = mlx5_nic_vport_update_local_lb(dev->mdev, true);
+			if (err)
+				goto err_rollback;
+
 			dev->lb.enabled = true;
 		}
 	}
 
 	mutex_unlock(&dev->lb.mutex);
 
+	return err;
+
+err_rollback:
+	if (td)
+		dev->lb.user_td--;
+	if (qp)
+		dev->lb.qps--;
+	mutex_unlock(&dev->lb.mutex);
 	return err;
 }
 
@@ -3127,14 +3136,16 @@ int mlx5_ib_dev_res_cq_init(struct mlx5_ib_dev *dev)
 	pd = ib_alloc_pd(ibdev, 0);
 	if (IS_ERR(pd)) {
 		ret = PTR_ERR(pd);
-		mlx5_ib_err(dev, "Couldn't allocate PD for res init, err=%d\n", ret);
+		mlx5_ib_err(dev, "Couldn't allocate PD for res init, err=%pe\n",
+			    pd);
 		goto unlock;
 	}
 
 	cq = ib_create_cq(ibdev, NULL, NULL, NULL, &cq_attr);
 	if (IS_ERR(cq)) {
 		ret = PTR_ERR(cq);
-		mlx5_ib_err(dev, "Couldn't create CQ for res init, err=%d\n", ret);
+		mlx5_ib_err(dev, "Couldn't create CQ for res init, err=%pe\n",
+			    cq);
 		ib_dealloc_pd(pd);
 		goto unlock;
 	}
@@ -3178,7 +3189,9 @@ int mlx5_ib_dev_res_srq_init(struct mlx5_ib_dev *dev)
 	s0 = ib_create_srq(devr->p0, &attr);
 	if (IS_ERR(s0)) {
 		ret = PTR_ERR(s0);
-		mlx5_ib_err(dev, "Couldn't create SRQ 0 for res init, err=%d\n", ret);
+		mlx5_ib_err(dev,
+			    "Couldn't create SRQ 0 for res init, err=%pe\n",
+			    s0);
 		goto unlock;
 	}
 
@@ -3190,7 +3203,9 @@ int mlx5_ib_dev_res_srq_init(struct mlx5_ib_dev *dev)
 	s1 = ib_create_srq(devr->p0, &attr);
 	if (IS_ERR(s1)) {
 		ret = PTR_ERR(s1);
-		mlx5_ib_err(dev, "Couldn't create SRQ 1 for res init, err=%d\n", ret);
+		mlx5_ib_err(dev,
+			    "Couldn't create SRQ 1 for res init, err=%pe\n",
+			    s1);
 		ib_destroy_srq(s0);
 		goto unlock;
 	}
@@ -3252,6 +3267,7 @@ mlx5_ib_create_data_direct_resources(struct mlx5_ib_dev *dev)
 {
 	int inlen = MLX5_ST_SZ_BYTES(create_mkey_in);
 	struct mlx5_core_dev *mdev = dev->mdev;
+	bool ro_supp = false;
 	void *mkc;
 	u32 mkey;
 	u32 pdn;
@@ -3280,14 +3296,37 @@ mlx5_ib_create_data_direct_resources(struct mlx5_ib_dev *dev)
 	MLX5_SET(mkc, mkc, length64, 1);
 	MLX5_SET(mkc, mkc, qpn, 0xffffff);
 	err = mlx5_core_create_mkey(mdev, &mkey, in, inlen);
-	kvfree(in);
 	if (err)
-		goto err;
+		goto err_mkey;
 
 	dev->ddr.mkey = mkey;
 	dev->ddr.pdn = pdn;
+
+	/* create another mkey with RO support */
+	if (MLX5_CAP_GEN(dev->mdev, relaxed_ordering_write)) {
+		MLX5_SET(mkc, mkc, relaxed_ordering_write, 1);
+		ro_supp = true;
+	}
+
+	if (MLX5_CAP_GEN(dev->mdev, relaxed_ordering_read)) {
+		MLX5_SET(mkc, mkc, relaxed_ordering_read, 1);
+		ro_supp = true;
+	}
+
+	if (ro_supp) {
+		err = mlx5_core_create_mkey(mdev, &mkey, in, inlen);
+		/* RO is defined as best effort */
+		if (!err) {
+			dev->ddr.mkey_ro = mkey;
+			dev->ddr.mkey_ro_valid = true;
+		}
+	}
+
+	kvfree(in);
 	return 0;
 
+err_mkey:
+	kvfree(in);
 err:
 	mlx5_core_dealloc_pd(mdev, pdn);
 	return err;
@@ -3296,6 +3335,10 @@ err:
 static void
 mlx5_ib_free_data_direct_resources(struct mlx5_ib_dev *dev)
 {
+
+	if (dev->ddr.mkey_ro_valid)
+		mlx5_core_destroy_mkey(dev->mdev, dev->ddr.mkey_ro);
+
 	mlx5_core_destroy_mkey(dev->mdev, dev->ddr.mkey);
 	mlx5_core_dealloc_pd(dev->mdev, dev->ddr.pdn);
 }
@@ -3741,20 +3784,6 @@ mlx5_ib_get_vector_irqn(struct ib_device *ibdev, int comp_vector)
 		return err;
 
 	return irqn;
-}
-
-static int
-mlx5_ib_reap_eq(struct ib_device *ibdev, struct ib_cq *i_scq)
-{
-	struct mlx5_ib_dev *dev = to_mdev(ibdev);
-	struct mlx5_core_dev *mdev = dev->mdev;
-	struct mlx5_ib_cq *cq = (struct mlx5_ib_cq *)i_scq;
-	struct mlx5_eq_comp *eq_comp;
-
-	eq_comp = cq->mcq.eq;
-	mlx5_eq_reap(mdev, eq_comp);
-
-	return 0;
 }
 #endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
@@ -4436,7 +4465,6 @@ static const struct ib_device_ops mlx5_ib_dev_ops = {
 	.get_dev_fw_str = get_dev_fw_str,
 #ifndef WITHOUT_ORACLE_EXTENSIONS
 	.get_vector_irqn = mlx5_ib_get_vector_irqn,
-	.reap_eq = mlx5_ib_reap_eq,
 #endif /* !WITHOUT_ORACLE_EXTENSIONS */
 	.get_dma_mr = mlx5_ib_get_dma_mr,
 	.get_link_layer = mlx5_ib_port_link_layer,
@@ -5348,6 +5376,7 @@ mp_err:
 dd_err:
 	mlx5r_rep_cleanup();
 rep_err:
+	rcu_barrier();
 	mlx5_ib_qp_event_cleanup();
 qp_event_err:
 	destroy_workqueue(mlx5_ib_event_wq);
@@ -5361,6 +5390,7 @@ static void __exit mlx5_ib_cleanup(void)
 	auxiliary_driver_unregister(&mlx5r_driver);
 	auxiliary_driver_unregister(&mlx5r_mp_driver);
 	mlx5r_rep_cleanup();
+	rcu_barrier();
 
 	mlx5_ib_qp_event_cleanup();
 	destroy_workqueue(mlx5_ib_event_wq);

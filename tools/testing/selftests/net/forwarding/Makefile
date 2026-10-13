@@ -1,8 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0+ OR MIT
 
-TEST_PROGS = bridge_fdb_learning_limit.sh \
+TEST_PROGS = \
+	bridge_activity_notify.sh \
+	bridge_fdb_learning_limit.sh \
 	bridge_igmp.sh \
 	bridge_locked_port.sh \
+	bridge_fdb_local_vlan_0.sh \
 	bridge_mdb.sh \
 	bridge_mdb_host.sh \
 	bridge_mdb_max.sh \
@@ -106,6 +109,7 @@ TEST_PROGS = bridge_fdb_learning_limit.sh \
 	vxlan_bridge_1q_port_8472_ipv6.sh \
 	vxlan_bridge_1q_port_8472.sh \
 	vxlan_bridge_1q.sh \
+	vxlan_reserved.sh \
 	vxlan_symmetric_ipv6.sh \
 	vxlan_symmetric.sh
 
@@ -127,6 +131,7 @@ TEST_FILES := devlink_lib.sh \
 	tc_common.sh
 
 TEST_INCLUDES := \
-	../lib.sh
+	../lib.sh \
+	$(wildcard ../lib/sh/*.sh)
 
 include ../../lib.mk

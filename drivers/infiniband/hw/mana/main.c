@@ -237,6 +237,27 @@ void mana_ib_dealloc_ucontext(struct ib_ucontext *ibcontext)
 		ibdev_dbg(ibdev, "Failed to destroy doorbell page %d\n", ret);
 }
 
+int mana_ib_create_kernel_queue(struct mana_ib_dev *mdev, u32 size, enum gdma_queue_type type,
+				struct mana_ib_queue *queue)
+{
+	struct gdma_context *gc = mdev_to_gc(mdev);
+	struct gdma_queue_spec spec = {};
+	int err;
+
+	queue->id = INVALID_QUEUE_ID;
+	queue->gdma_region = GDMA_INVALID_DMA_REGION;
+	spec.type = type;
+	spec.monitor_avl_buf = false;
+	spec.queue_size = size;
+	err = mana_gd_create_mana_wq_cq(&gc->mana_ib, &spec, &queue->kmem);
+	if (err)
+		return err;
+	/* take ownership into mana_ib from mana */
+	queue->gdma_region = queue->kmem->mem_info.dma_region_handle;
+	queue->kmem->mem_info.dma_region_handle = GDMA_INVALID_DMA_REGION;
+	return 0;
+}
+
 int mana_ib_create_queue(struct mana_ib_dev *mdev, u64 addr, u32 size,
 			 struct mana_ib_queue *queue)
 {
@@ -249,9 +270,8 @@ int mana_ib_create_queue(struct mana_ib_dev *mdev, u64 addr, u32 size,
 
 	umem = ib_umem_get(&mdev->ib_dev, addr, size, IB_ACCESS_LOCAL_WRITE);
 	if (IS_ERR(umem)) {
-		err = PTR_ERR(umem);
-		ibdev_dbg(&mdev->ib_dev, "Failed to get umem, %d\n", err);
-		return err;
+		ibdev_dbg(&mdev->ib_dev, "Failed to get umem, %pe\n", umem);
+		return PTR_ERR(umem);
 	}
 
 	err = mana_ib_create_zero_offset_dma_region(mdev, umem, &queue->gdma_region);
@@ -276,6 +296,8 @@ void mana_ib_destroy_queue(struct mana_ib_dev *mdev, struct mana_ib_queue *queue
 	 */
 	mana_ib_gd_destroy_dma_region(mdev, queue->gdma_region);
 	ib_umem_release(queue->umem);
+	if (queue->kmem)
+		mana_gd_destroy_queue(mdev_to_gc(mdev), queue->kmem);
 }
 
 static int
@@ -633,7 +655,7 @@ int mana_ib_gd_query_adapter_caps(struct mana_ib_dev *dev)
 
 	mana_gd_init_req_hdr(&req.hdr, MANA_IB_GET_ADAPTER_CAP, sizeof(req),
 			     sizeof(resp));
-	req.hdr.resp.msg_version = GDMA_MESSAGE_V3;
+	req.hdr.resp.msg_version = GDMA_MESSAGE_V4;
 	req.hdr.dev_id = dev->gdma_dev->dev_id;
 
 	err = mana_gd_send_request(mdev_to_gc(dev), sizeof(req),
@@ -662,6 +684,7 @@ int mana_ib_gd_query_adapter_caps(struct mana_ib_dev *dev)
 	caps->max_inline_data_size = resp.max_inline_data_size;
 	caps->max_send_sge_count = resp.max_send_sge_count;
 	caps->max_recv_sge_count = resp.max_recv_sge_count;
+	caps->feature_flags = resp.feature_flags;
 
 	return 0;
 }
@@ -677,7 +700,7 @@ mana_ib_event_handler(void *ctx, struct gdma_queue *q, struct gdma_event *event)
 	switch (event->type) {
 	case GDMA_EQE_RNIC_QP_FATAL:
 		qpn = event->details[0];
-		qp = mana_get_qp_ref(mdev, qpn);
+		qp = mana_get_qp_ref(mdev, qpn, false);
 		if (!qp)
 			break;
 		if (qp->ibqp.event_handler) {
@@ -760,6 +783,9 @@ int mana_ib_gd_create_rnic_adapter(struct mana_ib_dev *mdev)
 	req.hdr.req.msg_version = GDMA_MESSAGE_V2;
 	req.hdr.dev_id = gc->mana_ib.dev_id;
 	req.notify_eq_id = mdev->fatal_err_eq->id;
+
+	if (mdev->adapter_caps.feature_flags & MANA_IB_FEATURE_CLIENT_ERROR_CQE_SUPPORT)
+		req.feature_flags |= MANA_IB_FEATURE_CLIENT_ERROR_CQE_REQUEST;
 
 	err = mana_gd_send_request(gc, sizeof(req), &req, sizeof(resp), &resp);
 	if (err) {
@@ -982,6 +1008,64 @@ int mana_ib_gd_destroy_rc_qp(struct mana_ib_dev *mdev, struct mana_ib_qp *qp)
 	err = mana_gd_send_request(gc, sizeof(req), &req, sizeof(resp), &resp);
 	if (err) {
 		ibdev_err(&mdev->ib_dev, "Failed to destroy rc qp err %d", err);
+		return err;
+	}
+	return 0;
+}
+
+int mana_ib_gd_create_ud_qp(struct mana_ib_dev *mdev, struct mana_ib_qp *qp,
+			    struct ib_qp_init_attr *attr, u32 doorbell, u32 type)
+{
+	struct mana_ib_cq *send_cq = container_of(qp->ibqp.send_cq, struct mana_ib_cq, ibcq);
+	struct mana_ib_cq *recv_cq = container_of(qp->ibqp.recv_cq, struct mana_ib_cq, ibcq);
+	struct mana_ib_pd *pd = container_of(qp->ibqp.pd, struct mana_ib_pd, ibpd);
+	struct gdma_context *gc = mdev_to_gc(mdev);
+	struct mana_rnic_create_udqp_resp resp = {};
+	struct mana_rnic_create_udqp_req req = {};
+	int err, i;
+
+	mana_gd_init_req_hdr(&req.hdr, MANA_IB_CREATE_UD_QP, sizeof(req), sizeof(resp));
+	req.hdr.dev_id = gc->mana_ib.dev_id;
+	req.adapter = mdev->adapter_handle;
+	req.pd_handle = pd->pd_handle;
+	req.send_cq_handle = send_cq->cq_handle;
+	req.recv_cq_handle = recv_cq->cq_handle;
+	for (i = 0; i < MANA_UD_QUEUE_TYPE_MAX; i++)
+		req.dma_region[i] = qp->ud_qp.queues[i].gdma_region;
+	req.doorbell_page = doorbell;
+	req.max_send_wr = attr->cap.max_send_wr;
+	req.max_recv_wr = attr->cap.max_recv_wr;
+	req.max_send_sge = attr->cap.max_send_sge;
+	req.max_recv_sge = attr->cap.max_recv_sge;
+	req.qp_type = type;
+	err = mana_gd_send_request(gc, sizeof(req), &req, sizeof(resp), &resp);
+	if (err) {
+		ibdev_err(&mdev->ib_dev, "Failed to create ud qp err %d", err);
+		return err;
+	}
+	qp->qp_handle = resp.qp_handle;
+	for (i = 0; i < MANA_UD_QUEUE_TYPE_MAX; i++) {
+		qp->ud_qp.queues[i].id = resp.queue_ids[i];
+		/* The GDMA regions are now owned by the RNIC QP handle */
+		qp->ud_qp.queues[i].gdma_region = GDMA_INVALID_DMA_REGION;
+	}
+	return 0;
+}
+
+int mana_ib_gd_destroy_ud_qp(struct mana_ib_dev *mdev, struct mana_ib_qp *qp)
+{
+	struct mana_rnic_destroy_udqp_resp resp = {0};
+	struct mana_rnic_destroy_udqp_req req = {0};
+	struct gdma_context *gc = mdev_to_gc(mdev);
+	int err;
+
+	mana_gd_init_req_hdr(&req.hdr, MANA_IB_DESTROY_UD_QP, sizeof(req), sizeof(resp));
+	req.hdr.dev_id = gc->mana_ib.dev_id;
+	req.adapter = mdev->adapter_handle;
+	req.qp_handle = qp->qp_handle;
+	err = mana_gd_send_request(gc, sizeof(req), &req, sizeof(resp), &resp);
+	if (err) {
+		ibdev_err(&mdev->ib_dev, "Failed to destroy ud qp err %d", err);
 		return err;
 	}
 	return 0;

@@ -299,6 +299,7 @@ struct bnxt_qplib_qp {
 	u8				smac[6];
 	u16				vlan_id;
 	u16				port_id;
+	u16				udp_sport;
 	u8				nw_type;
 	struct bnxt_qplib_ah		ah;
 
@@ -344,7 +345,11 @@ struct bnxt_qplib_qp {
 	u32				msn_tbl_sz;
 	bool				is_host_msn_tbl;
 	u8				tos_dscp;
+	u32				ugid_index;
 };
+
+#define BNXT_RE_MAX_MSG_SIZE	0x80000000
+#define BNXT_RE_INVAL_MSG_SIZE	0xFFFFFFFF
 
 #define BNXT_QPLIB_MAX_CQE_ENTRY_SIZE	sizeof(struct cq_base)
 

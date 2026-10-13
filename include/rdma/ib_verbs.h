@@ -1885,6 +1885,7 @@ struct ib_mr {
 
 	struct ib_dm      *dm;
 	struct ib_sig_attrs *sig_attrs; /* only for IB_MR_TYPE_INTEGRITY MRs */
+	struct ib_dmah *dmah;
 	/*
 	 * Implementation details of the RDMA core, don't use in drivers:
 	 */
@@ -2416,7 +2417,6 @@ struct ib_device_ops {
 						     int comp_vector);
 #ifndef WITHOUT_ORACLE_EXTENSIONS
 	int (*get_vector_irqn)(struct ib_device *ibdev, int comp_vector);
-	int (*reap_eq)(struct ib_device *device, struct ib_cq *i_scq);
 #endif /* !WITHOUT_ORACLE_EXTENSIONS */
 	int (*query_port)(struct ib_device *device, u32 port_num,
 			  struct ib_port_attr *port_attr);
@@ -2558,10 +2558,12 @@ struct ib_device_ops {
 	struct ib_mr *(*get_dma_mr)(struct ib_pd *pd, int mr_access_flags);
 	struct ib_mr *(*reg_user_mr)(struct ib_pd *pd, u64 start, u64 length,
 				     u64 virt_addr, int mr_access_flags,
+				     struct ib_dmah *dmah,
 				     struct ib_udata *udata);
 	struct ib_mr *(*reg_user_mr_dmabuf)(struct ib_pd *pd, u64 offset,
 					    u64 length, u64 virt_addr, int fd,
 					    int mr_access_flags,
+					    struct ib_dmah *dmah,
 					    struct uverbs_attr_bundle *attrs);
 	struct ib_mr *(*rereg_user_mr)(struct ib_mr *mr, int flags, u64 start,
 				       u64 length, u64 virt_addr,
@@ -4820,12 +4822,6 @@ ib_get_vector_irqn(struct ib_device *device, int comp_vector)
 		return -1;
 
 	return device->ops.get_vector_irqn(device, comp_vector);
-}
-
-static inline int
-ib_reap_eq(struct ib_device *device, struct ib_cq *i_scq)
-{
-	return device->ops.reap_eq ? device->ops.reap_eq(device, i_scq) : -EOPNOTSUPP;
 }
 #endif /* !WITHOUT_ORACLE_EXTENSIONS */
 

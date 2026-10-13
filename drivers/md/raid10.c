@@ -1642,6 +1642,7 @@ static int raid10_handle_discard(struct mddev *mddev, struct bio *bio)
 
 	if (!wait_barrier(conf, bio->bi_opf & REQ_NOWAIT)) {
 		bio_wouldblock_error(bio);
+		md_write_end(mddev);
 		return 0;
 	}
 
@@ -1684,6 +1685,8 @@ static int raid10_handle_discard(struct mddev *mddev, struct bio *bio)
 		if (IS_ERR(split)) {
 			bio->bi_status = errno_to_blk_status(PTR_ERR(split));
 			bio_endio(bio);
+			md_write_end(mddev);
+			allow_barrier(conf);
 			return 0;
 		}
 
@@ -1701,6 +1704,8 @@ static int raid10_handle_discard(struct mddev *mddev, struct bio *bio)
 		if (IS_ERR(split)) {
 			bio->bi_status = errno_to_blk_status(PTR_ERR(split));
 			bio_endio(bio);
+			md_write_end(mddev);
+			allow_barrier(conf);
 			return 0;
 		}
 
@@ -2008,7 +2013,7 @@ static int enough(struct r10conf *conf, int ignore)
  *	- &mddev->degraded is bumped.
  *
  * @rdev is marked as &Faulty excluding case when array is failed and
- * &mddev->fail_last_dev is off.
+ * MD_FAILLAST_DEV is not set.
  */
 static void raid10_error(struct mddev *mddev, struct md_rdev *rdev)
 {
@@ -2020,7 +2025,7 @@ static void raid10_error(struct mddev *mddev, struct md_rdev *rdev)
 	if (test_bit(In_sync, &rdev->flags) && !enough(conf, rdev->raid_disk)) {
 		set_bit(MD_BROKEN, &mddev->flags);
 
-		if (!mddev->fail_last_dev) {
+		if (!test_bit(MD_FAILLAST_DEV, &mddev->flags)) {
 			spin_unlock_irqrestore(&conf->device_lock, flags);
 			return;
 		}
@@ -2129,7 +2134,7 @@ static int raid10_add_disk(struct mddev *mddev, struct md_rdev *rdev)
 	int last = conf->geo.raid_disks - 1;
 	struct raid10_info *p;
 
-	if (mddev->recovery_cp < MaxSector)
+	if (mddev->resync_offset < MaxSector)
 		/* only hot-add to in-sync arrays, as recovery is
 		 * very different from resync
 		 */
@@ -3206,7 +3211,7 @@ static sector_t raid10_sync_request(struct mddev *mddev, sector_t sector_nr,
 	 * of a clean array, like RAID1 does.
 	 */
 	if (mddev->bitmap == NULL &&
-	    mddev->recovery_cp == MaxSector &&
+	    mddev->resync_offset == MaxSector &&
 	    mddev->reshape_position == MaxSector &&
 	    !test_bit(MD_RECOVERY_SYNC, &mddev->recovery) &&
 	    !test_bit(MD_RECOVERY_REQUESTED, &mddev->recovery) &&
@@ -3412,7 +3417,7 @@ static sector_t raid10_sync_request(struct mddev *mddev, sector_t sector_nr,
 				struct md_rdev *rdev = conf->mirrors[j].rdev;
 
 				if (rdev == NULL || test_bit(Faulty, &rdev->flags)) {
-					still_degraded = false;
+					still_degraded = true;
 					break;
 				}
 			}
@@ -4169,7 +4174,7 @@ static int raid10_run(struct mddev *mddev)
 		disk->recovery_disabled = mddev->recovery_disabled - 1;
 	}
 
-	if (mddev->recovery_cp != MaxSector)
+	if (mddev->resync_offset != MaxSector)
 		pr_notice("md/raid10:%s: not clean -- starting background reconstruction\n",
 			  mdname(mddev));
 	pr_info("md/raid10:%s: active with %d out of %d devices\n",
@@ -4269,8 +4274,8 @@ static int raid10_resize(struct mddev *mddev, sector_t sectors)
 
 	md_set_array_sectors(mddev, size);
 	if (sectors > mddev->dev_sectors &&
-	    mddev->recovery_cp > oldsize) {
-		mddev->recovery_cp = oldsize;
+	    mddev->resync_offset > oldsize) {
+		mddev->resync_offset = oldsize;
 		set_bit(MD_RECOVERY_NEEDED, &mddev->recovery);
 	}
 	calc_sectors(conf, sectors);
@@ -4299,7 +4304,7 @@ static void *raid10_takeover_raid0(struct mddev *mddev, sector_t size, int devs)
 	mddev->delta_disks = mddev->raid_disks;
 	mddev->raid_disks *= 2;
 	/* make sure it will be not marked as dirty */
-	mddev->recovery_cp = MaxSector;
+	mddev->resync_offset = MaxSector;
 	mddev->dev_sectors = size;
 
 	conf = setup_conf(mddev);
@@ -5113,8 +5118,8 @@ static void raid10_finish_reshape(struct mddev *mddev)
 		return;
 
 	if (mddev->delta_disks > 0) {
-		if (mddev->recovery_cp > mddev->resync_max_sectors) {
-			mddev->recovery_cp = mddev->resync_max_sectors;
+		if (mddev->resync_offset > mddev->resync_max_sectors) {
+			mddev->resync_offset = mddev->resync_max_sectors;
 			set_bit(MD_RECOVERY_NEEDED, &mddev->recovery);
 		}
 		mddev->resync_max_sectors = mddev->array_sectors;

@@ -2815,7 +2815,6 @@ void ib_set_device_ops(struct ib_device *dev, const struct ib_device_ops *ops)
 	SET_DEVICE_OP(dev_ops, get_dev_fw_str);
 #ifndef WITHOUT_ORACLE_EXTENSIONS
 	SET_DEVICE_OP(dev_ops, get_vector_irqn);
-	SET_DEVICE_OP(dev_ops, reap_eq);
 #endif /* !WITHOUT_ORACLE_EXTENSIONS */
 	SET_DEVICE_OP(dev_ops, get_dma_mr);
 	SET_DEVICE_OP(dev_ops, get_hw_stats);
@@ -3188,6 +3187,7 @@ static void __exit ib_core_cleanup(void)
 	/* Make sure that any pending umem accounting work is done. */
 	destroy_workqueue(ib_wq);
 	destroy_workqueue(ib_unreg_wq);
+	rcu_barrier();
 	WARN_ON(!xa_empty(&clients));
 	WARN_ON(!xa_empty(&devices));
 }

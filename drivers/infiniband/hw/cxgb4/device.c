@@ -935,6 +935,7 @@ static void c4iw_rdev_close(struct c4iw_rdev *rdev)
 
 void c4iw_dealloc(struct uld_ctx *ctx)
 {
+	debugfs_remove_recursive(ctx->dev->debugfs_root);
 	c4iw_rdev_close(&ctx->dev->rdev);
 	WARN_ON(!xa_empty(&ctx->dev->cqs));
 	WARN_ON(!xa_empty(&ctx->dev->qps));
@@ -953,7 +954,12 @@ void c4iw_dealloc(struct uld_ctx *ctx)
 static void c4iw_remove(struct uld_ctx *ctx)
 {
 	pr_debug("c4iw_dev %p\n", ctx->dev);
-	debugfs_remove_recursive(ctx->dev->debugfs_root);
+
+	/* c4iw_register_device() may still be using ctx->dev. */
+	cancel_work_sync(&ctx->reg_work);
+	if (!ctx->dev)
+		return;
+
 	c4iw_unregister_device(ctx->dev);
 	c4iw_dealloc(ctx);
 }
@@ -1229,9 +1235,8 @@ static int c4iw_uld_state_change(void *handle, enum cxgb4_state new_state)
 		if (!ctx->dev) {
 			ctx->dev = c4iw_alloc(&ctx->lldi);
 			if (IS_ERR(ctx->dev)) {
-				pr_err("%s: initialization failed: %ld\n",
-				       pci_name(ctx->lldi.pdev),
-				       PTR_ERR(ctx->dev));
+				pr_err("%s: initialization failed: %pe\n",
+				       pci_name(ctx->lldi.pdev), ctx->dev);
 				ctx->dev = NULL;
 				break;
 			}

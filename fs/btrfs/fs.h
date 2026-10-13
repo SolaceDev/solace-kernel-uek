@@ -20,6 +20,7 @@
 #include <linux/rwsem.h>
 #include <linux/semaphore.h>
 #include <linux/list.h>
+#include <linux/pagemap.h>
 #include <linux/radix-tree.h>
 #include <linux/workqueue.h>
 #include <linux/wait.h>
@@ -894,6 +895,11 @@ struct btrfs_fs_info {
 #define inode_to_fs_info(_inode) (BTRFS_I(_Generic((_inode),			\
 					   struct inode *: (_inode)))->root->fs_info)
 
+static inline gfp_t btrfs_alloc_write_mask(struct address_space *mapping)
+{
+	return mapping_gfp_constraint(mapping, ~__GFP_FS);
+}
+
 static inline u64 btrfs_get_fs_generation(const struct btrfs_fs_info *fs_info)
 {
 	return READ_ONCE(fs_info->generation);
@@ -960,6 +966,8 @@ static inline u64 btrfs_calc_metadata_size(const struct btrfs_fs_info *fs_info,
 #define BTRFS_MAX_EXTENT_ITEM_SIZE(r) ((BTRFS_LEAF_DATA_SIZE(r->fs_info) >> 4) - \
 					sizeof(struct btrfs_item))
 
+#define BTRFS_BYTES_TO_BLKS(fs_info, bytes) ((bytes) >> (fs_info)->sectorsize_bits)
+
 static inline bool btrfs_is_zoned(const struct btrfs_fs_info *fs_info)
 {
 	return IS_ENABLED(CONFIG_BLK_DEV_ZONED) && fs_info->zone_size > 0;
@@ -1008,6 +1016,8 @@ void btrfs_csum(u16 csum_type, const u8 *data, size_t len, u8 *out);
 void btrfs_csum_init(struct btrfs_csum_ctx *ctx, u16 csum_type);
 void btrfs_csum_update(struct btrfs_csum_ctx *ctx, const u8 *data, size_t len);
 void btrfs_csum_final(struct btrfs_csum_ctx *ctx, u8 *out);
+
+bool __pure btrfs_is_empty_uuid(const u8 *uuid);
 
 /* Compatibility and incompatibility defines */
 void __btrfs_set_fs_incompat(struct btrfs_fs_info *fs_info, u64 flag,

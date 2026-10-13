@@ -229,11 +229,17 @@ err_free:
 
 struct ib_mr *hns_roce_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
 				   u64 virt_addr, int access_flags,
+				   struct ib_dmah *dmah,
 				   struct ib_udata *udata)
 {
 	struct hns_roce_dev *hr_dev = to_hr_dev(pd->device);
 	struct hns_roce_mr *mr;
 	int ret;
+
+	if (dmah) {
+		ret = -EOPNOTSUPP;
+		goto err_out;
+	}
 
 	mr = kzalloc(sizeof(*mr), GFP_KERNEL);
 	if (!mr) {
@@ -704,8 +710,8 @@ static int mtr_alloc_bufs(struct hns_roce_dev *hr_dev, struct hns_roce_mtr *mtr,
 		mtr->umem = ib_umem_get(ibdev, user_addr, total_size,
 					buf_attr->user_access);
 		if (IS_ERR(mtr->umem)) {
-			ibdev_err(ibdev, "failed to get umem, ret = %ld.\n",
-				  PTR_ERR(mtr->umem));
+			ibdev_err(ibdev, "failed to get umem, ret = %pe.\n",
+				  mtr->umem);
 			return -ENOMEM;
 		}
 	} else {
@@ -715,8 +721,8 @@ static int mtr_alloc_bufs(struct hns_roce_dev *hr_dev, struct hns_roce_mtr *mtr,
 					       !mtr_has_mtt(buf_attr) ?
 					       HNS_ROCE_BUF_DIRECT : 0);
 		if (IS_ERR(mtr->kmem)) {
-			ibdev_err(ibdev, "failed to alloc kmem, ret = %ld.\n",
-				  PTR_ERR(mtr->kmem));
+			ibdev_err(ibdev, "failed to alloc kmem, ret = %pe.\n",
+				  mtr->kmem);
 			return PTR_ERR(mtr->kmem);
 		}
 	}
