@@ -1219,7 +1219,15 @@ struct rq {
 	UEK_KABI_REPLACE_UNSAFE_SIZE(unsigned int nr_uninterruptible,
 		unsigned long nr_uninterruptible, 1)
 
+#ifdef __GENKSYMS__
 	struct task_struct __rcu	*curr;
+#else
+	/* Scheduling and execution contexts coincide without proxy execution. */
+	union {
+		struct task_struct __rcu *donor;
+		struct task_struct __rcu *curr;
+	};
+#endif
 	struct sched_dl_entity	*dl_server;
 	struct task_struct	*idle;
 	struct task_struct	*stop;
@@ -1361,7 +1369,7 @@ struct rq {
 	unsigned int		core_forceidle_seq;
 	unsigned int		core_forceidle_occupation;
 	u64			core_forceidle_start;
-#endif
+#endif /* CONFIG_SCHED_CORE */
 
 	/* Scratch cpumask to be temporarily used under rq_lock */
 	cpumask_var_t		scratch_mask;
@@ -1371,7 +1379,12 @@ struct rq {
 	struct list_head	cfsb_csd_list;
 #endif
 
+#ifdef CONFIG_SCHED_CORE
+	UEK_KABI_USE(1, unsigned int core_pick_in_flight)
+#else
 	UEK_KABI_RESERVE(1)
+#endif /* CONFIG_SCHED_CORE */
+
 	UEK_KABI_RESERVE(2)
 };
 

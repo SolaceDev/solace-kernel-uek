@@ -705,7 +705,7 @@ static void target_fabric_port_release(struct config_item *item)
 	struct se_lun *lun = container_of(to_config_group(item),
 					  struct se_lun, lun_group);
 
-	kfree_rcu(lun, rcu_head);
+	call_rcu(&lun->rcu_head, target_tpg_free_lun);
 }
 
 static struct configfs_item_operations target_fabric_port_item_ops = {
@@ -1074,6 +1074,28 @@ target_fabric_wwn_cmd_completion_affinity_store(struct config_item *item,
 CONFIGFS_ATTR(target_fabric_wwn_, cmd_completion_affinity);
 
 static ssize_t
+target_fabric_wwn_default_complete_type_show(struct config_item *item,
+					     char *page)
+{
+	struct se_wwn *wwn = container_of(to_config_group(item), struct se_wwn,
+					  param_group);
+	return sysfs_emit(page, "%u\n",
+			  wwn->wwn_tf->tf_ops->default_compl_type);
+}
+CONFIGFS_ATTR_RO(target_fabric_wwn_, default_complete_type);
+
+static ssize_t
+target_fabric_wwn_direct_complete_supported_show(struct config_item *item,
+						 char *page)
+{
+	struct se_wwn *wwn = container_of(to_config_group(item), struct se_wwn,
+					  param_group);
+	return sysfs_emit(page, "%u\n",
+			  wwn->wwn_tf->tf_ops->direct_compl_supp);
+}
+CONFIGFS_ATTR_RO(target_fabric_wwn_, direct_complete_supported);
+
+static ssize_t
 target_fabric_wwn_default_submit_type_show(struct config_item *item,
 					   char *page)
 {
@@ -1097,6 +1119,8 @@ CONFIGFS_ATTR_RO(target_fabric_wwn_, direct_submit_supported);
 
 static struct configfs_attribute *target_fabric_wwn_param_attrs[] = {
 	&target_fabric_wwn_attr_cmd_completion_affinity,
+	&target_fabric_wwn_attr_default_complete_type,
+	&target_fabric_wwn_attr_direct_complete_supported,
 	&target_fabric_wwn_attr_default_submit_type,
 	&target_fabric_wwn_attr_direct_submit_supported,
 	NULL,
